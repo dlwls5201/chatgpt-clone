@@ -1,6 +1,3 @@
-def main():
-    print("Hello from chatgpt-clone!")
+import streamlit as st
 
-
-if __name__ == "__main__":
-    main()
+st.header("Hello world!")
