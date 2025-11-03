@@ -3,7 +3,14 @@ import asyncio
 import base64
 import streamlit as st
 from openai import OpenAI
-from agents import Agent, Runner, SQLiteSession, WebSearchTool, FileSearchTool
+from agents import (
+    Agent,
+    Runner,
+    SQLiteSession,
+    WebSearchTool,
+    FileSearchTool,
+    CodeInterpreterTool,
+)
 
 dotenv.load_dotenv()
 
@@ -20,12 +27,21 @@ if "agent" not in st.session_state:
         You have access to the following tools:
             - WebSearchTool: Search the web for information.
             - File Search Tool: Use this tool when the user asks a question about facts related to themselves. Or when they ask questions about specific files.
+            - Code Interpreter Tool: Use this tool when you need to write and run code to answer the user's question.
         """,
         tools=[
             WebSearchTool(),
             FileSearchTool(
                 vector_store_ids=[VECTOR_STORE_ID],
                 max_num_results=3,
+            ),
+            CodeInterpreterTool(
+                tool_config={
+                    "type": "code_interpreter",
+                    "container": {
+                        "type": "auto",
+                    },
+                }
             ),
         ],
     )
@@ -58,12 +74,16 @@ async def paint_history():
                         st.write(message["content"][0]["text"])
 
         if "type" in message:
-            if message["type"] == "web_search_call":
+            message_type = message["type"]
+            if message_type == "web_search_call":
                 with st.chat_message("ai"):
                     st.write("🔍 Searched the web...")
-            elif message["type"] == "file_search_call":
+            elif message_type == "file_search_call":
                 with st.chat_message("ai"):
                     st.write("🗂️ Searched the files...")
+            elif message_type == "code_interpreter_call":
+                with st.chat_message("ai"):
+                    st.code(message["code"])
 
 
 asyncio.run(paint_history())
@@ -95,6 +115,22 @@ def update_status(status_container, event):
             "🗂️ File search in progress...",
             "running",
         ),
+        "response.code_interpreter_call_code.done": (
+            "🤖 Ran code.",
+            "complete",
+        ),
+        "response.code_interpreter_call.completed": (
+            "🤖 Ran code.",
+            "complete",
+        ),
+        "response.code_interpreter_call.in_progress": (
+            "🤖 Running code...",
+            "complete",
+        ),
+        "response.code_interpreter_call.interpreting": (
+            "🤖 Running code...",
+            "complete",
+        ),
         "response.completed": (" ", "complete"),
     }
 
@@ -106,8 +142,14 @@ def update_status(status_container, event):
 async def run_agent(message):
     with st.chat_message("ai"):
         status_container = st.status("⏳", expanded=False)
+        code_placeholder = st.empty()
         text_placeholder = st.empty()
-        response = ""
+
+        st.session_state["code_placeholder"] = code_placeholder
+        st.session_state["text_placeholder"] = text_placeholder
+
+        code_reponse = ""
+        text_response = ""
 
         stream = Runner.run_streamed(
             agent,
@@ -118,9 +160,14 @@ async def run_agent(message):
         async for event in stream.stream_events():
             if event.type == "raw_response_event":
                 update_status(status_container, event.data.type)
+
+                if event.data.type == "response.code_interpreter_call_code.delta":
+                    code_reponse += event.data.delta
+                    code_placeholder.code(code_reponse)
+
                 if event.data.type == "response.output_text.delta":
-                    response += event.data.delta
-                    text_placeholder.write(response)
+                    text_response += event.data.delta
+                    text_placeholder.write(text_response)
 
 
 prompt = st.chat_input(
@@ -135,6 +182,11 @@ prompt = st.chat_input(
 )
 
 if prompt:
+    if "code_placeholder" in st.session_state:
+        st.session_state["code_placeholder"].empty()
+    if "text_placeholder" in st.session_state:
+        st.session_state["text_placeholder"].empty()
+
     for file in prompt.files:
         if file.type.startswith("text/"):
             with st.chat_message("ai"):
