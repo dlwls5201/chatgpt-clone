@@ -12,6 +12,8 @@ from agents import (
     CodeInterpreterTool,
     HostedMCPTool,
 )
+from agents.mcp.server import MCPServerStdio
+
 
 dotenv.load_dotenv()
 
@@ -19,43 +21,6 @@ client = OpenAI()
 
 VECTOR_STORE_ID = "vs_690759b7c5cc8191acfee30312f6b265"
 
-if "agent" not in st.session_state:
-    st.session_state["agent"] = Agent(
-        name="ChatGPT Clone",
-        instructions="""
-        You are a chatbot that can answer questions and help with tasks.
-
-        You have access to the following tools:
-            - WebSearchTool: Search the web for information.
-            - File Search Tool: Use this tool when the user asks a question about facts related to themselves. Or when they ask questions about specific files.
-            - Code Interpreter Tool: Use this tool when you need to write and run code to answer the user's question.
-        """,
-        tools=[
-            WebSearchTool(),
-            FileSearchTool(
-                vector_store_ids=[VECTOR_STORE_ID],
-                max_num_results=3,
-            ),
-            CodeInterpreterTool(
-                tool_config={
-                    "type": "code_interpreter",
-                    "container": {
-                        "type": "auto",
-                    },
-                }
-            ),
-            HostedMCPTool(
-                tool_config={
-                    "server_url": "https://mcp.context7.com/mcp",
-                    "type": "mcp",
-                    "server_label": "Context7",
-                    "server_description": "Use this to get the docs from software projects.",
-                    "require_approval": "never",
-                }
-            ),
-        ],
-    )
-agent = st.session_state["agent"]
 
 if "session" not in st.session_state:
     st.session_state["session"] = SQLiteSession(
@@ -94,9 +59,14 @@ async def paint_history():
             elif message_type == "code_interpreter_call":
                 with st.chat_message("ai"):
                     st.code(message["code"])
+            elif message_type == "mcp_list_tools":
+                with st.chat_message("ai"):
+                    st.write(f"Listed {message['server_label']}'s tools")
             elif message_type == "mcp_call":
                 with st.chat_message("ai"):
-                    st.write("💡 Using Context7 to answer the question...")
+                    st.write(
+                        f"Called {message['server_label']}'s {message['name']} with args {message['arguments']}"
+                    )
 
 
 asyncio.run(paint_history())
@@ -177,34 +147,80 @@ def update_status(status_container, event):
 
 
 async def run_agent(message):
-    with st.chat_message("ai"):
-        status_container = st.status("⏳", expanded=False)
-        code_placeholder = st.empty()
-        text_placeholder = st.empty()
+    yfinance_server = MCPServerStdio(
+        params={
+            "command": "uvx",
+            "args": ["mcp-yahoo-finance"],
+        },
+        cache_tools_list=True,
+    )
 
-        st.session_state["code_placeholder"] = code_placeholder
-        st.session_state["text_placeholder"] = text_placeholder
+    async with yfinance_server:
+        agent = Agent(
+            mcp_servers=[yfinance_server],
+            name="ChatGPT Clone",
+            instructions="""
+            You are a chatbot that can answer questions and help with tasks.
 
-        code_reponse = ""
-        text_response = ""
-
-        stream = Runner.run_streamed(
-            agent,
-            message,
-            session=session,
+            You have access to the following tools:
+                - WebSearchTool: Search the web for information.
+                - File Search Tool: Use this tool when the user asks a question about facts related to themselves. Or when they ask questions about specific files.
+                - Code Interpreter Tool: Use this tool when you need to write and run code to answer the user's question.
+            """,
+            tools=[
+                WebSearchTool(),
+                FileSearchTool(
+                    vector_store_ids=[VECTOR_STORE_ID],
+                    max_num_results=3,
+                ),
+                CodeInterpreterTool(
+                    tool_config={
+                        "type": "code_interpreter",
+                        "container": {
+                            "type": "auto",
+                        },
+                    }
+                ),
+                HostedMCPTool(
+                    tool_config={
+                        "server_url": "https://mcp.context7.com/mcp",
+                        "type": "mcp",
+                        "server_label": "Context7",
+                        "server_description": "Use this to get the docs from software projects.",
+                        "require_approval": "never",
+                    }
+                ),
+            ],
         )
 
-        async for event in stream.stream_events():
-            if event.type == "raw_response_event":
-                update_status(status_container, event.data.type)
+        with st.chat_message("ai"):
+            status_container = st.status("⏳", expanded=False)
+            code_placeholder = st.empty()
+            text_placeholder = st.empty()
 
-                if event.data.type == "response.code_interpreter_call_code.delta":
-                    code_reponse += event.data.delta
-                    code_placeholder.code(code_reponse)
+            st.session_state["code_placeholder"] = code_placeholder
+            st.session_state["text_placeholder"] = text_placeholder
 
-                if event.data.type == "response.output_text.delta":
-                    text_response += event.data.delta
-                    text_placeholder.write(text_response)
+            code_reponse = ""
+            text_response = ""
+
+            stream = Runner.run_streamed(
+                agent,
+                message,
+                session=session,
+            )
+
+            async for event in stream.stream_events():
+                if event.type == "raw_response_event":
+                    update_status(status_container, event.data.type)
+
+                    if event.data.type == "response.code_interpreter_call_code.delta":
+                        code_reponse += event.data.delta
+                        code_placeholder.code(code_reponse)
+
+                    if event.data.type == "response.output_text.delta":
+                        text_response += event.data.delta
+                        text_placeholder.write(text_response)
 
 
 prompt = st.chat_input(
