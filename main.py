@@ -153,11 +153,14 @@ async def run_agent(message):
             "args": ["mcp-yahoo-finance"],
         },
         cache_tools_list=True,
+        client_session_timeout_seconds=30,
     )
 
     async with yfinance_server:
         agent = Agent(
-            mcp_servers=[yfinance_server],
+            mcp_servers=[
+                yfinance_server,
+            ],
             name="ChatGPT Clone",
             instructions="""
             You are a chatbot that can answer questions and help with tasks.
